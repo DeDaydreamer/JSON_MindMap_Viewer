@@ -1,4 +1,4 @@
-# JSON Mindmap Viewer v1.0.2 αΩ
+# JSON Mindmap Viewer v1.0.2.αΩ
 
 This repository contains a **self‑contained, offline viewer** for inspecting and sharing mindmaps stored in a simple JSON format. It does **not** include any actual maps—only the viewer itself. The tool was designed for maps exported from [Obsidian Canvas](https://obsidian.md) but will work with any JSON that includes `nodes` and `edges` arrays. You can use it to load your own exported files and explore them interactively.
 
