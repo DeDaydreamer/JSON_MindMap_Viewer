@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mindmap Viewer (Offline)</title>
+<style>
+  :root{
+    --bg:#0b1020;
+    --grid:rgba(255,255,255,.06);
+    --grid2:rgba(255,255,255,.03);
+    --txt:rgba(255,255,255,.92);
+    --muted:rgba(255,255,255,.65);
+    --stroke:rgba(138,164,216,.80);
+    --stroke2:rgba(138,164,216,.45);
+    --shadow:0 10px 30px rgba(0,0,0,.45);
+    --radius:14px;
+    --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+  html,body{height:100%; margin:0; background:var(--bg); color:var(--txt); font-family:var(--font); overflow:hidden;}
+  .app{position:fixed; inset:0; display:flex; flex-direction:column;}
+  .topbar{
+    display:flex; gap:10px; align-items:center;
+    padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.08);
+    background:linear-gradient(to bottom, rgba(255,255,255,.04), rgba(255,255,255,.02));
+    user-select:none;
+  }
+  .topbar .title{font-weight:700; letter-spacing:.2px;}
+  .topbar .hint{color:var(--muted); font-size:12px;}
+  .topbar .spacer{flex:1;}
+  .btn{
+    appearance:none; border:1px solid rgba(255,255,255,.14);
+    background:rgba(255,255,255,.04);
+    color:var(--txt);
+    padding:8px 10px; border-radius:12px;
+    font-size:13px; cursor:pointer;
+  }
+  .btn:hover{background:rgba(255,255,255,.07);}
+  .btn:active{transform:translateY(1px);}
+  .btn.small{padding:6px 8px; border-radius:10px; font-size:12px;}
+  .btn.danger{border-color:rgba(255,99,99,.25);}
+  .btn.danger:hover{background:rgba(255,99,99,.08);}
+  .stage{
+    position:relative; flex:1;
+    background:
+      radial-gradient(1200px 800px at 70% 20%, rgba(74,125,255,.10), transparent 55%),
+      radial-gradient(900px 700px at 20% 70%, rgba(90,255,205,.08), transparent 55%),
+      linear-gradient(to bottom, rgba(0,0,0,.0), rgba(0,0,0,.25));
+    overflow:hidden;
+  }
+  /* grid overlay */
+  .stage::before{
+    content:"";
+    position:absolute; inset:-2000px;
+    background:
+      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid) 1px, transparent 1px),
+      linear-gradient(to right, var(--grid2) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid2) 1px, transparent 1px);
+    background-size: 64px 64px, 64px 64px, 16px 16px, 16px 16px;
+    transform-origin:0 0;
+    pointer-events:none;
+    opacity:.85;
+  }
+
+  .viewport{position:absolute; inset:0; overflow:hidden;}
+  .world{
+    position:absolute; left:0; top:0;
+    transform-origin:0 0;
+    will-change:transform;
+  }
+
+  /* Layering:
+     groupsLayer (z=1) < edgesSvg (z=2) < nodesLayer (z=3)
+     This fixes: edges visible above translucent groups but below normal nodes.
+  */
+  #groupsLayer, #nodesLayer{
+    position:absolute; left:0; top:0;
+    width:0; height:0;
+  }
+
+  svg#edgesSvg{
+    position:absolute; left:0; top:0;
+    overflow:visible;
+    pointer-events:none;
+    z-index:2;
+  }
+  .edge{
+    stroke:var(--stroke);
+    stroke-width:2.2;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+    opacity:.95;
+  }
+  .edgeLabel{
+    fill:rgba(255,255,255,.85);
+    font-size:12px;
+    font-family:var(--font);
+    paint-order:stroke;
+    stroke:rgba(0,0,0,.65);
+    stroke-width:3px;
+  }
+
+  /* nodes */
+  .node{
+    position:absolute;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    border:1px solid rgba(255,255,255,.12);
+    background: rgba(18,24,44,.88);
+    backdrop-filter: blur(8px);
+    overflow:hidden;
+    z-index:3;
+  }
+  .node.group{
+    background: rgba(18,24,44,.35);
+    border:1px dashed rgba(255,255,255,.22);
+    box-shadow:none;
+    z-index:1;
+  }
+  .node .hdr{
+    padding:10px 12px;
+    border-bottom:1px solid rgba(255,255,255,.10);
+    display:flex; align-items:center; justify-content:space-between;
+    gap:10px;
+    user-select:none;
+    cursor:grab;
+  }
+  .node.group .hdr{border-bottom:none;}
+  .node .hdr .id{
+    font-family:var(--mono);
+    font-size:10px;
+    color:rgba(255,255,255,.45);
+  }
+  .node .hdr .label{
+    font-weight:700;
+    font-size:12px;
+    letter-spacing:.2px;
+    color:rgba(255,255,255,.92);
+  }
+  .node .body{
+    padding:10px 12px 12px 12px;
+    font-size:12.5px;
+    line-height:1.32;
+    color:rgba(255,255,255,.88);
+    white-space:normal;
+    word-wrap:break-word;
+  }
+  .node.group .body{display:none;}
+  .node .body code{font-family:var(--mono); font-size:12px;}
+  .node .footer{
+    display:flex; gap:8px; padding:10px 12px 12px 12px;
+    border-top:1px solid rgba(255,255,255,.08);
+    align-items:center;
+  }
+  .node.group .footer{display:none;}
+  .chip{
+    font-size:11px; padding:4px 8px; border-radius:999px;
+    border:1px solid rgba(255,255,255,.14);
+    color:rgba(255,255,255,.70);
+    background:rgba(255,255,255,.03);
+  }
+
+  /* Markdown styling inside nodes */
+  .node .body h1,.node .body h2,.node .body h3,.node .body h4,.node .body h5,.node .body h6{margin:0 0 6px 0; font-weight:800; line-height:1.15;}
+  .node .body h1{font-size:16px;}
+  .node .body h2{font-size:15px;}
+  .node .body h3{font-size:14px;}
+  .node .body h4{font-size:13px;}
+  .node .body h5{font-size:12.5px;}
+  .node .body h6{font-size:12px; color:rgba(255,255,255,.82);}
+  .node .body p{margin:0 0 8px 0;}
+  .node .body ul,.node .body ol{margin:6px 0 8px 18px; padding:0;}
+  .node .body li{margin:2px 0;}
+  .node .body a{color:#9ad0ff; text-decoration:none;}
+  .node .body a:hover{text-decoration:underline;}
+  .node .body hr{border:none; border-top:1px solid rgba(255,255,255,.18); margin:10px 0;}
+  .node .body pre{margin:8px 0; padding:10px; background:rgba(0,0,0,.28); border:1px solid rgba(255,255,255,.10); border-radius:12px; overflow:auto;}
+  .node .body pre code{font-size:12px;}
+  .node .body blockquote{margin:8px 0; padding:8px 10px; border-left:3px solid rgba(255,255,255,.22); background:rgba(255,255,255,.04); border-radius:10px; color:rgba(255,255,255,.80);}
+  .node .body input[type="checkbox"]{vertical-align:middle; margin-right:6px;}
+
+  /* color tags */
+  .c1{border-left:5px solid #ffb020;}
+  .c2{border-left:5px solid #6ee7ff;}
+  .c3{border-left:5px solid #7bffb1;}
+  .c4{border-left:5px solid #b59bff;}
+  .c5{border-left:5px solid #7cc0ff;}
+  .c6{border-left:5px solid #ff7cc8;}
+
+  /* mini HUD */
+  .hud{
+    position:absolute; right:12px; bottom:12px;
+    display:flex; flex-direction:column; gap:8px;
+    background:rgba(10,14,26,.62);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:16px;
+    padding:10px;
+    box-shadow: var(--shadow);
+    user-select:none;
+  }
+  .hud .row{display:flex; gap:8px; align-items:center;}
+  .hud .k{color:var(--muted); font-size:11px; width:70px;}
+  .hud .v{font-family:var(--mono); font-size:11px; color:rgba(255,255,255,.88);}
+  .toast{
+    position:absolute; left:12px; bottom:12px;
+    background:rgba(10,14,26,.62);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:16px;
+    padding:10px 12px;
+    box-shadow: var(--shadow);
+    color:rgba(255,255,255,.85);
+    max-width:520px;
+    font-size:12px;
+    user-select:none;
+  }
+  .toast b{color:#fff;}
+  textarea#jsonInput{
+    width: min(920px, 96vw);
+    height: min(340px, 50vh);
+    background: rgba(10,14,26,.75);
+    color: rgba(255,255,255,.92);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 16px;
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.35;
+    outline: none;
+  }
+  dialog{
+    border:none;
+    border-radius:18px;
+    background: rgba(10,14,26,.92);
+    color: var(--txt);
+    box-shadow: 0 30px 70px rgba(0,0,0,.65);
+    padding: 14px;
+  }
+  dialog::backdrop{
+    background: rgba(0,0,0,.55);
+    backdrop-filter: blur(4px);
+  }
+  .dlgHdr{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;}
+  .dlgHdr .ttl{font-weight:800;}
+  .dlgHint{color:var(--muted); font-size:12px; margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="title">Mindmap Viewer (Offline)</div>
+    <div class="hint">Pan: drag background • Zoom: wheel/pinch • Drag nodes: grab header • Fit: button</div>
+    <div class="spacer"></div>
+    <button class="btn small" id="btnFit">Fit</button>
+    <button class="btn small" id="btnReset">Reset</button>
+    <button class="btn small" id="btnExport">Export PNG</button>
+    <button class="btn small" id="btnLoad">Load JSON</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="viewport" id="viewport">
+      <div class="world" id="world">
+        <div id="groupsLayer"></div>
+        <svg id="edgesSvg"></svg>
+        <div id="nodesLayer"></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast">
+      <b>Tip:</b> This file is self-contained. To update the map, click <b>Load JSON</b> and paste your exported JSON.
+    </div>
+
+    <div class="hud" id="hud">
+      <div class="row"><div class="k">Zoom</div><div class="v" id="hudZoom">1.00</div></div>
+      <div class="row"><div class="k">Pan</div><div class="v" id="hudPan">0,0</div></div>
+      <div class="row"><div class="k">Nodes</div><div class="v" id="hudNodes">0</div></div>
+      <div class="row"><div class="k">Edges</div><div class="v" id="hudEdges">0</div></div>
+    </div>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlgHdr">
+    <div class="ttl">Load Mindmap JSON</div>
+    <button class="btn small danger" id="dlgClose">Close</button>
+  </div>
+  <div class="dlgHint">Paste your JSON export (with <span style="font-family:var(--mono)">nodes</span> and <span style="font-family:var(--mono)">edges</span>) and click “Apply”.</div>
+  <textarea id="jsonInput" spellcheck="false"></textarea>
+  <div style="display:flex; gap:10px; margin-top:10px; justify-content:flex-end;">
+    <button class="btn" id="dlgApply">Apply</button>
+  </div>
+</dialog>
+
+<script>
+/* =========================================================
+   0) Robust-ish Markdown (offline) - Marked-compatible API
+   ========================================================= */
+const marked = (() => {
+  function escHtml(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function parseInline(s){
+    s = s.replace(/`([^`]+)`/g, (_,c)=>`<code>${escHtml(c)}</code>`);
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_,t,u)=>`<a href="${escHtml(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`);
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+    return s;
+  }
+
+  function parse(md){
+    if(md == null) return "";
+    let src = String(md).replace(/\r\n/g,"\n");
+
+    const codeBlocks = [];
+    src = src.replace(/```([\s\S]*?)```/g, (m,code)=>{
+      const idx = codeBlocks.length;
+      codeBlocks.push(code);
+      return `\u0000CODEBLOCK${idx}\u0000`;
+    });
+
+    src = escHtml(src);
+
+    src = src.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (m,i)=>{
+      const code = codeBlocks[Number(i)] ?? "";
+      return `<pre><code>${escHtml(code.replace(/\r\n/g,"\n"))}</code></pre>`;
+    });
+
+    src = src.replace(/^\s*---\s*$/gm, "<hr>");
+
+    const lines = src.split("\n");
+    let out = [];
+    let i = 0;
+
+    function isBlank(l){ return /^\s*$/.test(l); }
+
+    function parseList(startIdx, indentLevel){
+      let html = [];
+      let ordered = false;
+      let i = startIdx;
+
+      function liContent(line){
+        let m = line.match(/^\s*-\s*\[(x| )\]\s+(.*)$/i);
+        if(m){
+          const checked = m[1].toLowerCase() === 'x';
+          return `<li><input type="checkbox" ${checked?'checked':''} disabled> ${parseInline(m[2])}</li>`;
+        }
+        m = line.match(/^\s*[-*+]\s+(.*)$/);
+        if(m) return `<li>${parseInline(m[1])}</li>`;
+        m = line.match(/^\s*\d+\.\s+(.*)$/);
+        if(m) return `<li>${parseInline(m[1])}</li>`;
+        return null;
+      }
+
+      if(lines[i].match(/^\s*\d+\.\s+/)) ordered = true;
+
+      while(i < lines.length){
+        const line = lines[i];
+        if(isBlank(line)) break;
+
+        const leading = line.match(/^(\s*)/)[1].length;
+        if(leading < indentLevel) break;
+
+        const li = liContent(line);
+        if(!li) break;
+
+        html.push(li);
+        i++;
+      }
+
+      const tag = ordered ? "ol" : "ul";
+      return { html: `<${tag}>${html.join("")}</${tag}>`, next: i };
+    }
+
+    while(i < lines.length){
+      let line = lines[i];
+
+      if(line.includes("<pre><code>")){
+        out.push(line);
+        i++;
+        continue;
+      }
+
+      let bq = line.match(/^\s*&gt;\s?(.*)$/);
+      if(bq){
+        out.push(`<blockquote>${parseInline(bq[1])}</blockquote>`);
+        i++;
+        continue;
+      }
+
+      let h = line.match(/^(#{1,6})\s+(.*)$/);
+      if(h){
+        const level = h[1].length;
+        out.push(`<h${level}>${parseInline(h[2])}</h${level}>`);
+        i++;
+        continue;
+      }
+
+      if(line.match(/^\s*[-*+]\s+/) || line.match(/^\s*\d+\.\s+/) || line.match(/^\s*-\s*\[(x| )\]\s+/i)){
+        const indent = line.match(/^(\s*)/)[1].length;
+        const res = parseList(i, indent);
+        out.push(res.html);
+        i = res.next;
+        continue;
+      }
+
+      if(isBlank(line)){
+        i++;
+        continue;
+      }
+
+      let para = [];
+      while(i < lines.length && !isBlank(lines[i])){
+        para.push(lines[i]);
+        i++;
+      }
+      const joined = para.join("<br>");
+      out.push(`<p>${parseInline(joined)}</p>`);
+    }
+
+    return out.join("");
+  }
+
+  return { parse };
+})();
+
+/* =========================================================
+   1) Default JSON
+   ========================================================= */
+let mapData = {"nodes": [], "edges": []};
+
+/* =========================================================
+   2) DOM refs
+   ========================================================= */
+const stage = document.getElementById('stage');
+const viewport = document.getElementById('viewport');
+const world = document.getElementById('world');
+const groupsLayer = document.getElementById('groupsLayer');
+const nodesLayer = document.getElementById('nodesLayer');
+const edgesSvg = document.getElementById('edgesSvg');
+
+const hudZoom = document.getElementById('hudZoom');
+const hudPan = document.getElementById('hudPan');
+const hudNodes = document.getElementById('hudNodes');
+const hudEdges = document.getElementById('hudEdges');
+
+const btnFit = document.getElementById('btnFit');
+const btnReset = document.getElementById('btnReset');
+const btnExport = document.getElementById('btnExport');
+const btnLoad = document.getElementById('btnLoad');
+
+const dlg = document.getElementById('dlg');
+const dlgClose = document.getElementById('dlgClose');
+const dlgApply = document.getElementById('dlgApply');
+const jsonInput = document.getElementById('jsonInput');
+
+/* =========================================================
+   3) State
+   ========================================================= */
+const nodesById = new Map();
+let panX = 0, panY = 0, scale = 1;
+
+let isPanning = false;
+let panStart = {x:0,y:0, panX:0, panY:0};
+
+let draggingNode = null;
+let nodeDragStart = {mx:0,my:0, nx:0, ny:0};
+
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+function colorClass(color){
+  const c = String(color || '').trim();
+  if(/^[1-6]$/.test(c)) return 'c' + c;
+  return '';
+}
+
+function setWorldTransform(){
+  world.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  updateHud();
+}
+
+function updateHud(){
+  hudZoom.textContent = scale.toFixed(2);
+  hudPan.textContent = `${Math.round(panX)},${Math.round(panY)}`;
+  hudNodes.textContent = mapData.nodes.length;
+  hudEdges.textContent = mapData.edges.length;
+}
+
+function computeBounds(){
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for(const n of mapData.nodes){
+    const x = Number(n.x ?? 0);
+    const y = Number(n.y ?? 0);
+    const w = Number(n.width ?? 200);
+    const h = Number(n.height ?? 120);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  }
+  if(!isFinite(minX)) return {minX:0, minY:0, maxX:1000, maxY:600};
+  return {minX, minY, maxX, maxY};
+}
+
+function anchor(node, side){
+  const x = Number(node.x ?? 0);
+  const y = Number(node.y ?? 0);
+  const w = Number(node.width ?? 200);
+  const h = Number(node.height ?? 120);
+  const s = (side || 'right').toLowerCase();
+  switch(s){
+    case 'left': return {x:x, y:y+h/2};
+    case 'right': return {x:x+w, y:y+h/2};
+    case 'top': return {x:x+w/2, y:y};
+    case 'bottom': return {x:x+w/2, y:y+h};
+    default: return {x:x+w, y:y+h/2};
+  }
+}
+
+/* =========================================================
+   4) Rendering
+   ========================================================= */
+function clearAll(){
+  groupsLayer.innerHTML = '';
+  nodesLayer.innerHTML = '';
+  edgesSvg.innerHTML = '';
+  nodesById.clear();
+}
+
+function render(){
+  clearAll();
+  for(const n of mapData.nodes){
+    nodesById.set(n.id, n);
+  }
+  renderNodes();
+  renderEdges();
+  updateHud();
+}
+
+function renderNodes(){
+  const groups = mapData.nodes.filter(n => n.type === 'group');
+  const normals = mapData.nodes.filter(n => n.type !== 'group');
+
+  for(const n of groups) groupsLayer.appendChild(buildNodeEl(n, true));
+  for(const n of normals) nodesLayer.appendChild(buildNodeEl(n, false));
+}
+
+function buildNodeEl(n, isGroup){
+  const el = document.createElement('div');
+  el.className = 'node ' + (isGroup ? 'group ' : '') + colorClass(n.color);
+  el.dataset.id = n.id;
+
+  el.style.left = (Number(n.x ?? 0)) + 'px';
+  el.style.top = (Number(n.y ?? 0)) + 'px';
+  el.style.width = (Number(n.width ?? 200)) + 'px';
+  el.style.height = (Number(n.height ?? 120)) + 'px';
+
+  const c = String(n.color || '').trim();
+  if(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)){
+    el.style.borderLeft = `5px solid ${c}`;
+  }
+
+  const hdr = document.createElement('div');
+  hdr.className = 'hdr';
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = isGroup ? (n.label || 'GROUP') : headerFromText(n.text || '');
+
+  const idSpan = document.createElement('div');
+  idSpan.className = 'id';
+  idSpan.textContent = n.id;
+
+  hdr.appendChild(label);
+  hdr.appendChild(idSpan);
+
+  const body = document.createElement('div');
+  body.className = 'body';
+  if(isGroup){
+    body.textContent = '';
+  }else{
+    body.innerHTML = marked.parse(n.text || '');
+  }
+
+  const footer = document.createElement('div');
+  footer.className = 'footer';
+  if(!isGroup){
+    const chipType = document.createElement('span');
+    chipType.className = 'chip';
+    chipType.textContent = (n.type || 'text');
+    footer.appendChild(chipType);
+
+    const chipSize = document.createElement('span');
+    chipSize.className = 'chip';
+    chipSize.textContent = `${Math.round(Number(n.width||0))}×${Math.round(Number(n.height||0))}`;
+    footer.appendChild(chipSize);
+  }
+
+  el.appendChild(hdr);
+  el.appendChild(body);
+  el.appendChild(footer);
+
+  if(!isGroup){
+    hdr.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      hdr.setPointerCapture(ev.pointerId);
+      draggingNode = n;
+      nodeDragStart = { mx: ev.clientX, my: ev.clientY, nx: Number(n.x||0), ny: Number(n.y||0) };
+      hdr.style.cursor = 'grabbing';
+    });
+    hdr.addEventListener('pointerup', (ev) => {
+      try{ hdr.releasePointerCapture(ev.pointerId); }catch(e){}
+      hdr.style.cursor = 'grab';
+      draggingNode = null;
+      renderEdges();
+    });
+    hdr.addEventListener('pointermove', (ev) => {
+      if(!draggingNode || draggingNode.id !== n.id) return;
+      const dx = (ev.clientX - nodeDragStart.mx) / scale;
+      const dy = (ev.clientY - nodeDragStart.my) / scale;
+      n.x = nodeDragStart.nx + dx;
+      n.y = nodeDragStart.ny + dy;
+      el.style.left = n.x + 'px';
+      el.style.top = n.y + 'px';
+      renderEdges();
+    });
+  }
+
+  return el;
+}
+
+function headerFromText(text){
+  const lines = String(text||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(!lines.length) return 'Node';
+  const first = lines[0].replace(/^#+\s*/,'').replace(/[*_`]/g,'');
+  return first.slice(0, 40);
+}
+
+function renderEdges(){
+  edgesSvg.innerHTML = '';
+
+  const bounds = computeBounds();
+  const pad = 240;
+
+  const vbX = bounds.minX - pad;
+  const vbY = bounds.minY - pad;
+  const vbW = (bounds.maxX - bounds.minX) + pad*2;
+  const vbH = (bounds.maxY - bounds.minY) + pad*2;
+
+  edgesSvg.style.left = vbX + 'px';
+  edgesSvg.style.top  = vbY + 'px';
+  edgesSvg.setAttribute('width', vbW);
+  edgesSvg.setAttribute('height', vbH);
+  edgesSvg.setAttribute('viewBox', `0 0 ${vbW} ${vbH}`);
+  edgesSvg.setAttribute('preserveAspectRatio', 'none');
+
+  const ox = -vbX;
+  const oy = -vbY;
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  const marker = document.createElementNS('http://www.w3.org/2000/svg','marker');
+  marker.setAttribute('id','arrow');
+  marker.setAttribute('markerWidth','10');
+  marker.setAttribute('markerHeight','10');
+  marker.setAttribute('refX','9');
+  marker.setAttribute('refY','3');
+  marker.setAttribute('orient','auto');
+  marker.setAttribute('markerUnits','strokeWidth');
+  const arrowPath = document.createElementNS('http://www.w3.org/2000/svg','path');
+  arrowPath.setAttribute('d','M0,0 L9,3 L0,6 Z');
+  arrowPath.setAttribute('fill','rgba(138,164,216,.85)');
+  marker.appendChild(arrowPath);
+  defs.appendChild(marker);
+  edgesSvg.appendChild(defs);
+
+  for(const e of mapData.edges){
+    const from = nodesById.get(e.fromNode);
+    const to = nodesById.get(e.toNode);
+    if(!from || !to) continue;
+
+    const aW = anchor(from, e.fromSide);
+    const bW = anchor(to, e.toSide);
+    const a = { x: aW.x + ox, y: aW.y + oy };
+    const b = { x: bW.x + ox, y: bW.y + oy };
+
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.max(40, Math.hypot(dx,dy));
+    const k = Math.min(0.6, 140 / dist);
+    const c1 = { x: a.x + dx * (0.35 + k*0.1), y: a.y + dy * 0.15 };
+    const c2 = { x: a.x + dx * (0.65 - k*0.1), y: a.y + dy * 0.85 };
+
+    const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d', `M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`);
+    p.setAttribute('class', 'edge');
+    p.setAttribute('marker-end', 'url(#arrow)');
+    edgesSvg.appendChild(p);
+
+    if(e.label){
+      const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+      t.setAttribute('class','edgeLabel');
+      t.textContent = e.label;
+      const mid = { x: a.x + dx*0.5, y: a.y + dy*0.5 };
+      t.setAttribute('x', mid.x + 8);
+      t.setAttribute('y', mid.y - 8);
+      edgesSvg.appendChild(t);
+    }
+  }
+}
+
+/* =========================================================
+   5) Pan/Zoom
+   ========================================================= */
+viewport.addEventListener('pointerdown', (ev) => {
+  isPanning = true;
+  viewport.setPointerCapture(ev.pointerId);
+  panStart = { x: ev.clientX, y: ev.clientY, panX, panY };
+});
+
+viewport.addEventListener('pointermove', (ev) => {
+  if(!isPanning) return;
+  const dx = ev.clientX - panStart.x;
+  const dy = ev.clientY - panStart.y;
+  panX = panStart.panX + dx;
+  panY = panStart.panY + dy;
+  setWorldTransform();
+});
+
+viewport.addEventListener('pointerup', (ev) => {
+  isPanning = false;
+  try{ viewport.releasePointerCapture(ev.pointerId); }catch(e){}
+});
+
+viewport.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const delta = -ev.deltaY;
+  const zoomFactor = (delta > 0) ? 1.08 : 1/1.08;
+
+  const prevScale = scale;
+  scale = clamp(scale * zoomFactor, 0.15, 2.5);
+
+  const rect = viewport.getBoundingClientRect();
+  const mx = ev.clientX - rect.left;
+  const my = ev.clientY - rect.top;
+
+  const wx = (mx - panX) / prevScale;
+  const wy = (my - panY) / prevScale;
+
+  panX = mx - wx * scale;
+  panY = my - wy * scale;
+
+  setWorldTransform();
+}, { passive:false });
+
+/* =========================================================
+   6) Fit / Reset
+   ========================================================= */
+function fitToScreen(){
+  const bounds = computeBounds();
+  const pad = 140;
+
+  const w = viewport.clientWidth;
+  const h = viewport.clientHeight;
+
+  const bw = (bounds.maxX - bounds.minX) + pad*2;
+  const bh = (bounds.maxY - bounds.minY) + pad*2;
+
+  const s = clamp(Math.min(w / bw, h / bh), 0.15, 2.0);
+  scale = s;
+
+  const targetX = (w - bw * scale) / 2;
+  const targetY = (h - bh * scale) / 2;
+
+  panX = targetX - (bounds.minX - pad) * scale;
+  panY = targetY - (bounds.minY - pad) * scale;
+
+  setWorldTransform();
+}
+
+function resetView(){
+  panX = 60;
+  panY = 60;
+  scale = 1;
+  setWorldTransform();
+}
+
+/* =========================================================
+   7) Export PNG
+   ========================================================= */
+async function exportPng(){
+  const bounds = computeBounds();
+  const pad = 240;
+
+  const w = Math.ceil((bounds.maxX - bounds.minX) + pad*2);
+  const h = Math.ceil((bounds.maxY - bounds.minY) + pad*2);
+
+  const nodesClone = nodesLayer.cloneNode(true);
+  const groupsClone = groupsLayer.cloneNode(true);
+
+  nodesClone.style.position = 'absolute';
+  nodesClone.style.left = '0';
+  nodesClone.style.top = '0';
+
+  groupsClone.style.position = 'absolute';
+  groupsClone.style.left = '0';
+  groupsClone.style.top = '0';
+
+  const edgesClone = edgesSvg.cloneNode(true);
+  edgesClone.style.position = 'absolute';
+
+  const wrapper = document.createElement('div');
+  wrapper.style.width = w + 'px';
+  wrapper.style.height = h + 'px';
+  wrapper.style.position = 'relative';
+  wrapper.style.background = getComputedStyle(document.body).backgroundColor;
+
+  const offsetX = -(bounds.minX - pad);
+  const offsetY = -(bounds.minY - pad);
+
+  for(const el of groupsClone.querySelectorAll('.node')){
+    const left = parseFloat(el.style.left || '0');
+    const top  = parseFloat(el.style.top || '0');
+    el.style.left = (left + offsetX) + 'px';
+    el.style.top  = (top  + offsetY) + 'px';
+  }
+  for(const el of nodesClone.querySelectorAll('.node')){
+    const left = parseFloat(el.style.left || '0');
+    const top  = parseFloat(el.style.top || '0');
+    el.style.left = (left + offsetX) + 'px';
+    el.style.top  = (top  + offsetY) + 'px';
+  }
+
+  edgesClone.style.left = (parseFloat(edgesClone.style.left||'0') + offsetX) + 'px';
+  edgesClone.style.top  = (parseFloat(edgesClone.style.top||'0') + offsetY) + 'px';
+
+  wrapper.appendChild(groupsClone);
+  wrapper.appendChild(edgesClone);
+  wrapper.appendChild(nodesClone);
+
+  const cssText = Array.from(document.styleSheets)
+    .map(ss => {
+      try { return Array.from(ss.cssRules).map(r => r.cssText).join('\n'); }
+      catch(e){ return ''; }
+    })
+    .join('\n');
+
+  const fo = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+    <foreignObject width="100%" height="100%">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <style>${cssText}</style>
+        ${wrapper.outerHTML}
+      </div>
+    </foreignObject>
+  </svg>`;
+
+  const blob = new Blob([fo], {type:'image/svg+xml;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = url;
+
+  await new Promise((res, rej) => {
+    img.onload = () => res();
+    img.onerror = (e) => rej(e);
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+
+  URL.revokeObjectURL(url);
+
+  canvas.toBlob((png) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(png);
+    a.download = 'mindmap.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2500);
+  }, 'image/png');
+}
+
+/* =========================================================
+   8) Load JSON
+   ========================================================= */
+function openLoadDialog(){
+  jsonInput.value = JSON.stringify(mapData, null, 2);
+  dlg.showModal();
+}
+dlgClose.addEventListener('click', () => dlg.close());
+btnLoad.addEventListener('click', openLoadDialog);
+
+dlgApply.addEventListener('click', () => {
+  try{
+    const parsed = JSON.parse(jsonInput.value);
+    if(!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)){
+      alert('JSON must contain "nodes" and "edges" arrays.');
+      return;
+    }
+    mapData = parsed;
+    render();
+    fitToScreen();
+    dlg.close();
+  }catch(err){
+    alert('Invalid JSON: ' + err.message);
+  }
+});
+
+/* =========================================================
+   9) Buttons
+   ========================================================= */
+btnFit.addEventListener('click', () => { renderEdges(); fitToScreen(); });
+btnReset.addEventListener('click', () => { resetView(); });
+btnExport.addEventListener('click', () => exportPng().catch(e => alert('Export failed: ' + e)));
+btnReset.addEventListener('dblclick', () => { fitToScreen(); });
+
+/* =========================================================
+   10) Init
+   ========================================================= */
+(function init(){
+  render();
+  resetView();
+})();
+</script>
+</body>
+</html>
